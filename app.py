@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 
-st.set_page_config(page_title="FPL Tracker", layout="wide")
+st.set_page_config(page_title="FPL League Tracker", layout="wide")
 
 # Constants
 LEAGUE_ID = "1133270"
@@ -22,59 +22,69 @@ def get_history_data(entry_id):
     r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
     return r.json()['current']
 
-# --- APP UI ---
-st.title("⚽ FPL Gain/Loss Tracker")
+# --- DATA PROCESSING ---
+st.title("⚽ FPL League Manager & History")
 
-members = get_league_members(LEAGUE_ID)
+try:
+    members = get_league_members(LEAGUE_ID)
 
-# 1. Fetch data for all available weeks
-with st.spinner("Analyzing history for the last 5 gameweeks..."):
-    all_data = []
-    for m in members:
-        history = get_history_data(m['entry'])
-        for h in history:
-            all_data.append({
-                "GW": h['event'],
-                "Manager": m['player_name'],
-                "Points": h['total_points']
-            })
+    with st.spinner("Processing full season data..."):
+        all_data = []
+        for m in members:
+            history = get_history_data(m['entry'])
+            for h in history:
+                all_data.append({
+                    "GW": h['event'],
+                    "Manager": m['player_name'],
+                    "Points": h['total_points']
+                })
 
-    full_df = pd.DataFrame(all_data)
+        full_df = pd.DataFrame(all_data)
 
-    # 2. Calculate Gain/Loss for every manager in every GW
-    def calculate_metrics(group):
-        n = len(group)
-        total_pts = group['Points'].sum()
-        # Formula: (Points * (n-1) - sum_of_others) * 2
-        group['Gain/Loss'] = group['Points'].apply(lambda x: (x * (n - 1)) - (total_pts - x)) * 2
-        return group
+        # Logic: (My Pts * (n-1) - sum_of_others) * 2
+        def calculate_metrics(group):
+            n = len(group)
+            total_pts = group['Points'].sum()
+            group['Gain/Loss'] = group['Points'].apply(lambda x: (x * (n - 1)) - (total_pts - x)) * 2
+            return group
 
-    full_df = full_df.groupby('GW', group_keys=False).apply(calculate_metrics)
+        full_df = full_df.groupby('GW', group_keys=False).apply(calculate_metrics)
+        max_gw = full_df['GW'].max()
 
-# --- TREND CHART (Last 5 GWs) ---
-st.subheader("📈 Gain/Loss Trend (Last 5 GWs)")
+    # --- SIDEBAR SELECTOR ---
+    selected_gw = st.sidebar.select_slider(
+        "Select Gameweek to view Standings:",
+        options=sorted(full_df['GW'].unique().tolist()),
+        value=max_gw
+    )
+    st.sidebar.markdown(f"**Viewing: GW {selected_gw}**")
 
-# Filter for the last 5 weeks
-max_gw = full_df['GW'].max()
-min_gw = max(1, max_gw - 4)
-trend_df = full_df[full_df['GW'] >= min_gw]
+    # --- 1. SELECTED STANDINGS ---
+    st.header(f"🏆 Standings: End of Gameweek {selected_gw}")
+    
+    view_df = full_df[full_df['GW'] == selected_gw].sort_values("Points", ascending=False)
+    
+    def style_positive_negative(val):
+        color = '#2ecc71' if val > 0 else '#e74c3c' if val < 0 else '#95a5a6'
+        return f'color: {color}; font-weight: bold'
 
-# Pivot data for st.line_chart: Index=GW, Columns=Managers, Values=Gain/Loss
-chart_data = trend_df.pivot(index='GW', columns='Manager', values='Gain/Loss')
-st.line_chart(chart_data)
+    st.dataframe(
+        view_df[['Manager', 'Points', 'Gain/Loss']].style.applymap(style_positive_negative, subset=['Gain/Loss']),
+        use_container_width=True,
+        hide_index=True
+    )
 
-# --- STANDINGS TABLE (Current GW) ---
-st.subheader(f"Current Standings (GW {max_gw})")
-current_gw_df = full_df[full_df['GW'] == max_gw].sort_values("Points", ascending=False)
+    st.markdown("---")
 
-def style_values(val):
-    color = 'green' if val > 0 else 'red' if val < 0 else 'gray'
-    return f'color: {color}; font-weight: bold'
+    # --- 2. GAIN/LOSS TREND (ALL TIME) ---
+    st.header("📈 Season Progress: Gain/Loss Trend")
+    st.write("Cumulative movement across all gameweeks.")
 
-st.dataframe(
-    current_gw_df[['Manager', 'Points', 'Gain/Loss']].style.applymap(style_values, subset=['Gain/Loss']),
-    use_container_width=True,
-    hide_index=True
-)
+    # Pivot data for st.line_chart
+    chart_data = full_df.pivot(index='GW', columns='Manager', values='Gain/Loss')
+    st.line_chart(chart_data)
 
-st.caption(f"Data automatically excludes {IGNORE_PLAYER}. Chart shows cumulative trend.")
+except Exception as e:
+    st.error(f"Error: {e}")
+
+st.caption(f"Filtering: {IGNORE_PLAYER} removed. Requirements: streamlit, pandas, requests.")
