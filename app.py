@@ -1,89 +1,66 @@
 import streamlit as st
-import requests
 import pandas as pd
+import requests
 
-# Page setup
-st.set_page_config(page_title="P&L Benchmark 2x", page_icon="⚖️", layout="wide")
+# App Configuration
+st.set_page_config(page_title="FPL League Calc", page_icon="⚽")
 
-st.title("⚖️ LCF: The P&L 2x Multiplier")
-st.markdown("Rules: Emil Chau is excluded. P&L's Net Score = (Total of points beaten) - (Total of points lost to).")
+st.title("🏆 FPL League Points Calculator")
+st.markdown("Calculates net scores based on point differences with all opponents.")
 
-LEAGUE_ID = 1133270
-FPL_API_BASE = "https://fantasy.premierleague.com/api/"
+# Constants
+LEAGUE_ID = "1133270"
+IGNORE_PLAYER = "Emil Chau"
 
-@st.cache_data(ttl=600)
-def get_league_data():
+@st.cache_data(ttl=3600)  # Cache data for 1 hour to stay within API limits
+def get_fpl_data(league_id):
+    url = f"https://fantasy.premierleague.com/api/leagues-classic/{league_id}/standings/"
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        url = f"{FPL_API_BASE}leagues-classic/{LEAGUE_ID}/standings/"
-        response = requests.get(url).json()
-        standings = response['standings']['results']
-        
-        # RULE 1: Ignore Emil Chau
-        return [m for m in standings if m['player_name'].strip() != "Emil Chau"]
-    except:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        return response.json()['standings']['results']
+    except Exception as e:
+        st.error(f"Failed to fetch data: {e}")
         return None
 
-data = get_league_data()
+raw_data = get_fpl_data(LEAGUE_ID)
 
-if data:
-    # Identify P&L (Searching Manager Name or Team Name)
-    p_l_entry = next((m for m in data if "P&L" in str(m['player_name']).upper() or "P&L" in str(m['entry_name']).upper()), None)
+if raw_data:
+    # 1) Filter out Emil Chau
+    filtered_data = [p for p in raw_data if p['player_name'] != IGNORE_PLAYER]
     
-    if p_l_entry:
-        p_l_pts = p_l_entry['total']
-        p_l_name = p_l_entry['player_name']
-        
-        # RULE 2: Net Score Logic
-        # Difference = (My Points - Their Points)
-        # Summing these gives the net score directly
-        net_score = sum([(p_l_pts - m['total']) for m in data if m['entry'] != p_l_entry['entry']])
-        
-        # RULE 3: 2x Multiplier
-        final_gain_loss = net_score * 2
-        
-        # --- TOP METRICS ---
-        st.subheader(f"Current Status for {p_l_name}")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("P&L Raw FPL Points", p_l_pts)
-        c2.metric("Net Score (Sum of Diffs)", f"{net_score:+}")
-        
-        # Dynamic color for the multiplier
-        color_style = "normal" if final_gain_loss >= 0 else "inverse"
-        c3.metric("FINAL GAIN/LOSS (2x)", f"{final_gain_loss:+}", delta_color=color_style)
+    df = pd.DataFrame(filtered_data)
+    df = df[['player_name', 'entry_name', 'total']].copy()
+    
+    # 2) Logic: Net score is difference vs everyone else
+    total_players = len(df)
+    sum_all_pts = df['total'].sum()
+    
+    # Calculation: (My Pts * (N-1)) - (Sum of everyone else's pts)
+    df['Net Score'] = df['total'].apply(lambda x: (x * (total_players - 1)) - (sum_all_pts - x))
+    
+    # 3) Gain/Loss = Net Score * 2
+    df['Gain/Loss'] = df['Net Score'] * 2
+    
+    # UI Styling
+    df = df.rename(columns={
+        'player_name': 'Manager', 
+        'entry_name': 'Team', 
+        'total': 'FPL Points'
+    })
 
-        st.divider()
+    # Display results
+    st.subheader(f"Standings (Excluding {IGNORE_PLAYER})")
+    
+    def color_values(val):
+        color = 'green' if val > 0 else 'red' if val < 0 else 'black'
+        return f'color: {color}; font-weight: bold'
 
-        # --- RANKINGS TABLE ---
-        table_list = []
-        for m in data:
-            diff = p_l_pts - m['total']
-            table_list.append({
-                "Rank": m['rank'],
-                "Manager": m['player_name'],
-                "Team": m['entry_name'],
-                "FPL Pts": m['total'],
-                "Diff vs P&L": diff,
-                "2x Contribution": diff * 2
-            })
-        
-        df = pd.DataFrame(table_list).sort_values("FPL Pts", ascending=False)
-
-        # Highlight P&L Row
-        def highlight_p_l(s):
-            return ['background-color: #004d40; color: white' if "P&L" in str(s.Manager).upper() else '' for _ in s]
-
-        st.write("### The Shame Table")
-        st.dataframe(df.style.apply(highlight_p_l, axis=1), use_container_width=True, hide_index=True)
-        
-        # Explainer
-        with st.expander("How is this calculated?"):
-            st.write(f"1. We find everyone in the league except Emil Chau.")
-            st.write(f"2. For every player, we do: `({p_l_pts} - Their Score)`.")
-            st.write(f"3. We add all those numbers up (Net Score: {net_score}).")
-            st.write(f"4. We multiply the result by 2 to get the Final Score: **{final_gain_loss}**.")
-            
-    else:
-        st.error("⚠️ Manager 'P&L' not found. Ensure 'P&L' is in your FPL Manager name or Team name.")
-        st.info("Found managers: " + ", ".join([m['player_name'] for m in data]))
-else:
-    st.error("Could not fetch league data. Check your League ID.")
+    st.dataframe(
+        df.style.applymap(color_values, subset=['Net Score', 'Gain/Loss']),
+        use_container_width=True,
+        hide_index=True
+    )
+    
+    st.success(f"Calculation complete for {total_players} managers.")
