@@ -1,9 +1,8 @@
 import streamlit as st
 import pandas as pd
 import requests
-import plotly.express as px
 
-st.set_page_config(page_title="FPL History & Trends", layout="wide")
+st.set_page_config(page_title="FPL Points Calc", layout="centered")
 
 # Constants
 LEAGUE_ID = "1133270"
@@ -19,78 +18,59 @@ def get_league_members(league_id):
     return [p for p in r.json()['standings']['results'] if p['player_name'] != IGNORE_PLAYER]
 
 @st.cache_data(ttl=3600)
-def get_history_data(entry_id):
+def get_manager_gw_score(entry_id, target_gw):
     url = f"https://fantasy.premierleague.com/api/entry/{entry_id}/history/"
     r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
-    return r.json()['current']
+    history = r.json()['current']
+    # Find the specific gameweek data
+    for gw_data in history:
+        if gw_data['event'] == target_gw:
+            return gw_data['total_points']
+    return 0
 
 # --- APP UI ---
-st.title("⚽ FPL League History & Gain/Loss Trends")
+st.title("⚽ FPL League Points Calculator")
 
-with st.sidebar:
-    st.header("Settings")
-    members = get_league_members(LEAGUE_ID)
-    
-    # Determine max GW available
-    sample_history = get_history_data(members[0]['entry'])
-    max_gw = len(sample_history)
-    
-    selected_gw = st.slider("Select Gameweek", 1, max_gw, max_gw)
-    st.info(f"Showing results for GW {selected_gw}")
+# Sidebar for GW selection
+members = get_league_members(LEAGUE_ID)
+# Get the current GW by checking the first member's history length
+sample_r = requests.get(f"https://fantasy.premierleague.com/api/entry/{members[0]['entry']}/history/", headers={"User-Agent": "Mozilla/5.0"})
+max_gw = len(sample_r.json()['current'])
 
-# --- CALCULATION LOGIC ---
-all_gw_results = []
+selected_gw = st.sidebar.slider("Select Gameweek", 1, max_gw, max_gw)
 
-# We fetch history for all members to build a trend chart
-with st.spinner("Analyzing league history..."):
+# --- CALCULATION ---
+with st.spinner(f"Calculating scores for GW {selected_gw}..."):
+    rows = []
     for m in members:
-        history = get_history_data(m['entry'])
-        for h in history:
-            all_gw_results.append({
-                "GW": h['event'],
-                "Manager": m['player_name'],
-                "Points": h['total_points']
-            })
+        pts_at_gw = get_manager_gw_score(m['entry'], selected_gw)
+        rows.append({
+            "Manager": m['player_name'],
+            "Team": m['entry_name'],
+            "FPL Total Points": pts_at_gw
+        })
 
-# Convert to DataFrame
-df_history = pd.DataFrame(all_gw_results)
+    df = pd.DataFrame(rows)
+    n = len(df)
+    sum_all_points = df['FPL Total Points'].sum()
 
-# Calculate Net Score for EVERY GW (for the trend chart)
-def calc_net_scores(group):
-    n = len(group)
-    total_pts = group['Points'].sum()
-    group['Net Score'] = group['Points'].apply(lambda x: (x * (n - 1)) - (total_pts - x))
-    group['Gain/Loss'] = group['Net Score'] * 2
-    return group
+    # Logic: (My Pts * (n-1)) - (Sum of others)
+    df['Net Score'] = df['FPL Total Points'].apply(lambda x: (x * (n - 1)) - (sum_all_points - x))
+    df['Gain/Loss'] = df['Net Score'] * 2
 
-df_history = df_history.groupby('GW', group_keys=False).apply(calc_net_scores)
+    # Formatting
+    df = df.sort_values(by="FPL Total Points", ascending=False)
 
-# --- DISPLAY ---
-col1, col2 = st.columns([1, 2])
-
-with col1:
-    st.subheader(f"GW {selected_gw} Standings")
-    current_df = df_history[df_history['GW'] == selected_gw].sort_values("Points", ascending=False)
+    st.subheader(f"Standings at end of Gameweek {selected_gw}")
     
-    def color_gl(val):
-        return f'color: {"green" if val > 0 else "red"}; font-weight: bold'
-    
+    def color_values(val):
+        color = 'green' if val > 0 else 'red' if val < 0 else 'gray'
+        return f'color: {color}; font-weight: bold'
+
     st.dataframe(
-        current_df[['Manager', 'Points', 'Net Score', 'Gain/Loss']].style.applymap(color_gl, subset=['Gain/Loss']),
-        hide_index=True, use_container_width=True
+        df.style.applymap(color_values, subset=['Net Score', 'Gain/Loss']),
+        use_container_width=True,
+        hide_index=True
     )
 
-with col2:
-    st.subheader("Season Trend: Gain/Loss")
-    fig = px.line(
-        df_history, 
-        x="GW", y="Gain/Loss", color="Manager",
-        title="Cumulative Gain/Loss Over Time",
-        markers=True,
-        template="plotly_white"
-    )
-    # Add a zero line
-    fig.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.5)
-    st.plotly_chart(fig, use_container_width=True)
-
-st.caption(f"Note: Data excludes {IGNORE_PLAYER}. Net Score = (My Points vs All Opponents).")
+st.caption(f"Excluding: {IGNORE_PLAYER} | Formula: Net Score * 2")
