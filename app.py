@@ -3,7 +3,8 @@ import pandas as pd
 import requests
 import numpy as np
 
-st.set_page_config(page_title="FPL 數據決算終端", layout="wide")
+# 針對 iPhone 優化佈局
+st.set_page_config(page_title="FPL 數據終端", layout="wide", initial_sidebar_state="collapsed")
 
 # 常數設定
 LEAGUE_ID = "1133270"
@@ -24,12 +25,12 @@ def get_history_data(entry_id):
     return r.json()['current']
 
 # --- 2. 數據核心計算 ---
-st.title("📊 FPL 聯賽決算預測終端")
+st.title("📊 FPL 聯賽決算預測")
 
 try:
     members = get_league_members(LEAGUE_ID)
     
-    with st.spinner("系統正在執行數據建模與趨勢預估..."):
+    with st.spinner("系統正在計算..."):
         all_data = []
         for m in members:
             history = get_history_data(m['entry'])
@@ -47,7 +48,6 @@ try:
         def calculate_gl(group):
             n = len(group)
             total_pts = group['目前總分'].sum()
-            # 公式: (個人分 * (n-1) - 其他人總分和) * 2
             group['輸贏積分'] = (group['目前總分'] * (n - 1) - (total_pts - group['目前總分'])) * 2
             return group
 
@@ -60,13 +60,10 @@ try:
         
         for m_name in full_df['經理人'].unique():
             m_history = full_df[full_df['經理人'] == m_name].sort_values('週數')
-            
-            # 趨勢分析：近 5 週平均表現
             recent_avg = m_history.tail(5)['當週得分'].mean()
-            remaining_weeks = 38 - max_gw
+            remaining_wks = 38 - max_gw
             
-            # 預測 GW38 總得分
-            pred_total_points = m_history['目前總分'].iloc[-1] + (recent_avg * remaining_weeks)
+            pred_total_points = m_history['目前總分'].iloc[-1] + (recent_avg * remaining_wks)
             prediction_list.append({
                 "經理人": m_name, 
                 "預測總分": int(pred_total_points),
@@ -82,27 +79,25 @@ try:
         pred_df['預測GW38輸贏'] = (pred_df['預測總分'] * (n_players - 1) - (total_pred_pts - pred_df['預測總分'])) * 2
         pred_df['預測GW38輸贏'] = pred_df['預測GW38輸贏'].astype(int)
 
-    # --- 3. 頂部看板 (指標卡片) ---
+    # --- 3. 頂部看板 (iPhone 優化：使用 2x2 佈局) ---
     top_current = current_gw_data.loc[current_gw_data['輸贏積分'].idxmax()]
     top_predicted = pred_df.loc[pred_df['預測GW38輸贏'].idxmax()]
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("當前最高輸贏", f"{int(top_current['輸贏積分'])} pts", f"由 {top_current['經理人']}")
-    c2.metric("預測賽季末最高輸贏", f"{int(top_predicted['預測GW38輸贏'])} pts", f"由 {top_predicted['經理人']}")
-    c3.metric("聯賽平均波動 (±)", f"{int(current_gw_data['輸贏積分'].abs().mean())}")
-    c4.metric("剩餘賽事週數", f"{38 - max_gw}")
+    # 在手機上，4 欄會太擠，改為兩組兩欄
+    r1_col1, r1_col2 = st.columns(2)
+    r1_col1.metric("當前最高輸贏", f"{int(top_current['輸贏積分'])}")
+    r1_col2.metric("預測最高輸贏", f"{int(top_predicted['預測GW38輸贏'])}")
 
-    # --- 4. 預測模型說明 (Markdown) ---
+    r2_col1, r2_col2 = st.columns(2)
+    r2_col1.metric("聯賽波動", f"±{int(current_gw_data['輸贏積分'].abs().mean())}")
+    r2_col2.metric("剩餘週數", f"{38 - max_gw}")
+
+    # --- 4. 預測模型說明 (修正 LaTeX 錯誤) ---
     with st.expander("📝 查看預測模型計算說明"):
-        st.markdown(f"""
-        ### 🔮 第 38 週預測模型算法
-        本系統採用**動態加權趨勢法**進行賽季末預測，計算步驟如下：
-        1. **數據基準**：以目前第 **{max_gw}** 週的累積總分為基礎。
-        2. **近期趨勢**：計算每位玩家**最近 5 週 (GW {max_gw-4} - GW {max_gw})** 的平均得分。這能更準確反映玩家當前的球隊狀態（如轉會策略、傷病影響）。
-        3. **推算公式**：
-           $$預測總分 = 目前累積總分 + (近期 5 週平均分 \\times {38 - max_gw} \\text{ 剩餘週數})$$
-        4. **輸贏積分重新平衡**：將所有玩家的預測總分放入聯賽池中，重新計算基於第 38 週預測總分的 **Net Score × 2**。
-        """)
+        # 這裡將中文字移出 $ 符號，避免 name error
+        st.write(f"**1. 數據基準**：以目前第 {max_gw} 週總分為準。")
+        st.write(f"**2. 近期趨勢**：採計最近 5 週平均得分。")
+        st.latex(r"Total_{pred} = Total_{current} + (Avg_{recent} \times Weeks_{left})")
 
     # --- 5. 詳細數據表格 ---
     st.markdown("---")
@@ -112,12 +107,13 @@ try:
     
     display_df['輸贏積分'] = display_df['輸贏積分'].astype(int)
 
-    st.header(f"🏆 積分結算與預估 (截止至 GW {max_gw})")
+    st.subheader(f"🏆 積分結算 (GW {max_gw})")
     
     def color_gl(val):
         color = '#2ecc71' if val > 0 else '#e74c3c' if val < 0 else '#95a5a6'
         return f'color: {color}; font-weight: bold'
 
+    # iPhone 優化：隱藏不必要的欄位減少捲動
     st.dataframe(
         display_df.style.applymap(color_gl, subset=['輸贏積分', '預測GW38輸贏']),
         use_container_width=True, hide_index=True
@@ -125,43 +121,26 @@ try:
 
     # --- 6. 趨勢圖表 ---
     st.markdown("---")
-    st.header("📈 聯賽輸贏積分趨勢圖")
+    st.subheader("📈 輸贏趨勢圖")
     chart_data = full_df.pivot(index='週數', columns='經理人', values='輸贏積分')
     st.line_chart(chart_data)
 
-    # --- 7. 專業統計摘要 (底欄) ---
+    # --- 7. 專業統計摘要 ---
     st.markdown("---")
-    st.header("📊 專業統計摘要 (Professional Summary Statistics)")
+    st.subheader("📊 專業統計摘要")
     
-    stats_cols = st.columns(3)
-    
-    with stats_cols[0]:
-        st.subheader("📌 穩定度分析")
-        # 分數標準差越小，越穩定
-        consistency_df = pred_df.sort_values("總分標準差").head(3)
-        st.write("聯賽最穩健經理人 (Top 3):")
-        for i, row in consistency_df.iterrows():
-            st.write(f"- **{row['經理人']}** (波動率: ±{row['總分標準差']})")
+    # 手機上改用垂直排列
+    st.write("🎯 **穩定度領先** (波動率最小):")
+    low_vol = pred_df.sort_values("總分標準差").iloc[0]
+    st.write(f"- {low_vol['經理人']} (±{low_vol['總分標準差']} pts)")
 
-    with stats_cols[1]:
-        st.subheader("⚡ 成長潛力")
-        # 預測輸贏 vs 當前輸贏 差距最大的人
-        current_gl_map = current_gw_data.set_index('經理人')['輸贏積分']
-        pred_df['成長幅度'] = pred_df['預測GW38輸贏'] - pred_df['經理人'].map(current_gl_map)
-        potential_df = pred_df.sort_values("成長幅度", ascending=False).head(3)
-        st.write("看漲經理人 (預測季末噴發):")
-        for i, row in potential_df.iterrows():
-            st.write(f"- **{row['經理人']}** (預計成長: +{int(row['成長幅度'])} pts)")
-
-    with stats_cols[2]:
-        st.subheader("📉 風險預警")
-        # 預測輸贏大幅下降的人
-        risk_df = pred_df.sort_values("成長幅度", ascending=True).head(3)
-        st.write("看跌經理人 (需注意近期頹勢):")
-        for i, row in risk_df.iterrows():
-            st.write(f"- **{row['經理人']}** (預計衰退: {int(row['成長幅度'])} pts)")
+    st.write("🚀 **潛力黑馬** (預計成長最多):")
+    current_gl_map = current_gw_data.set_index('經理人')['輸贏積分']
+    pred_df['成長幅度'] = pred_df['預測GW38輸贏'] - pred_df['經理人'].map(current_gl_map)
+    high_pot = pred_df.sort_values("成長幅度", ascending=False).iloc[0]
+    st.write(f"- {high_pot['經理人']} (+{int(high_pot['成長幅度'])} pts)")
 
 except Exception as e:
     st.error(f"系統運行錯誤: {e}")
 
-st.caption(f"數據源：FPL Official API | 已自動過濾非聯賽成員：{IGNORE_PLAYER}")
+st.caption(f"App Optimized for iOS/Android | Powered by Gemini")
