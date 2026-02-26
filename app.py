@@ -3,16 +3,23 @@ import pandas as pd
 import requests
 import numpy as np
 
-# iPhone 行動端深度優化
-st.set_page_config(page_title="FPL 量化矩陣終端", layout="wide", initial_sidebar_state="collapsed")
+# iPhone 行動端優化
+st.set_page_config(page_title="FPL 量化終端 PRO", layout="wide", initial_sidebar_state="collapsed")
 
 # 專業感 CSS
 st.markdown("""
     <style>
-    .main { background-color: #f4f7f6; }
-    [data-testid="stMetricValue"] { font-size: 18px !important; }
-    /* 強化表格在手機上的顯示 */
-    .stDataFrame div[data-testid="stTable"] { font-size: 12px !important; }
+    .main { background-color: #f0f2f6; }
+    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+    [data-testid="stMetricValue"] { font-size: 22px !important; font-weight: 700; }
+    .player-card {
+        background-color: #ffffff;
+        padding: 15px;
+        border-radius: 12px;
+        border-left: 5px solid #3498db;
+        margin-bottom: 10px;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -39,103 +46,101 @@ try:
     max_gw = df['GW'].max()
     t = 38 - max_gw
 
-    # 1. 核心輸贏計算 (Net Score * 2)
+    # 1. 核心輸贏計算
     def calc_gl(group):
         n = len(group)
         group['目前輸贏'] = (group['總分'] * (n - 1) - (group['總分'].sum() - group['總分'])) * 2
         return group
     df = df.groupby('GW', group_keys=False).apply(calc_gl)
 
-    # 2. 量化指標與預測模型
-    quant_results = []
+    # 2. 量化指標與預測
+    quant_list = []
     for manager in df['經理人'].unique():
         m_df = df[df['經理人'] == manager].sort_values('GW')
         pts = m_df['當週分']
-        
-        # --- 預測模型 (WMA + Range) ---
         wma = np.average(pts.tail(5), weights=[1,2,3,4,5])
         ev = m_df['總分'].iloc[-1] + (wma * t)
         std = pts.std()
         margin = 1.96 * std * np.sqrt(t) if t > 0 else 0
         
-        # --- 技術指標 ---
-        # RSI (5週)
+        # RSI & MACD
         delta = pts.diff()
         gain = (delta.where(delta > 0, 0)).rolling(5).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(5).mean()
         rsi = 100 - (100 / (1 + (gain / loss))).iloc[-1]
-        
-        # MACD (快3/慢8)
-        macd = pts.ewm(span=3).mean() - pts.ewm(span=8).mean()
-        signal = macd.ewm(span=3).mean()
-        
-        # 布林帶 %B (衡量是否處於得分紅利期)
-        ma5 = pts.rolling(5).mean()
-        std5 = pts.rolling(5).std()
-        b_percent = (pts - (ma5 - 2*std5)) / (4*std5) if std5.iloc[-1] != 0 else 0.5
-        
-        # 動量指標 (Momentum)
-        mom = pts.tail(3).mean() - pts.mean()
+        macd = (pts.ewm(span=3).mean() - pts.ewm(span=8).mean()).iloc[-1]
+        sig = (pts.ewm(span=3).mean() - pts.ewm(span=8).mean()).ewm(span=3).mean().iloc[-1]
 
-        quant_results.append({
+        quant_list.append({
             "經理人": manager,
             "目前輸贏": int(m_df['目前輸贏'].iloc[-1]),
             "GW38 EV": int(ev),
             "Expected Upper": int(ev + margin),
             "Expected Lower": int(ev - margin),
-            "RSI (動能)": int(rsi) if not np.isnan(rsi) else 50,
-            "MACD 趨勢": "🟢 轉強" if macd.iloc[-1] > signal.iloc[-1] else "🔴 走弱",
-            "布林帶 %B": round(b_percent.iloc[-1], 2) if not np.isnan(b_percent.iloc[-1]) else 0.5,
-            "爆發力 (Mom)": int(mom)
+            "RSI": int(rsi) if not np.isnan(rsi) else 50,
+            "趨勢": "🟢 轉強" if macd > sig else "🔴 走弱",
+            "波動度": int(std)
         })
 
-    res_df = pd.DataFrame(quant_results)
+    res_df = pd.DataFrame(quant_list).sort_values('目前輸贏', ascending=False)
     
-    # 預計季末輸贏對沖
+    # 預測輸贏對沖
     total_ev = res_df['GW38 EV'].sum()
     res_df['預測輸贏'] = ((res_df['GW38 EV'] * len(res_df) - total_ev) * 2).astype(int)
 
     # --- UI 呈現 ---
-    st.title("🏛️ FPL 量化決算矩陣終端")
+    
+    # A. 頂部看板 (指標卡片)
+    st.title("🏛️ FPL 量化博弈終端")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("聯賽榜首", res_df.iloc[0]['經理人'])
+    c2.metric("最高輸贏", f"{res_df['目前輸贏'].max()} pts")
+    c3.metric("剩餘週期", f"{t} 週")
 
-    # 1. 預測假設
+    # B. 個人狀態卡片 (iPhone 滾動式卡片)
+    st.subheader("👤 經理人即時狀態卡")
+    # 在手機上，我們使用 2 欄顯示卡片
+    cols = st.columns(2)
+    for idx, row in res_df.iterrows():
+        with cols[idx % 2]:
+            st.markdown(f"""
+            <div class="player-card">
+                <small style="color:gray;">{row['經理人']}</small><br>
+                <strong style="font-size:18px;">目前：{row['目前輸贏']} pts</strong><br>
+                <span style="color:{'#2ecc71' if row['預測輸贏'] > 0 else '#e74c3c'}; font-size:14px;">
+                    預測季末：{row['預測輸贏']} pts
+                </span><br>
+                <small>動能 RSI: {row['RSI']} | {row['趨勢']}</small>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # C. 決算矩陣 (轉置表格)
+    st.markdown("---")
+    st.subheader("📊 深度量化矩陣 (Matrix)")
+    matrix_df = res_df.set_index('經理人').T
+    row_order = ['目前輸贏', '預測輸贏', 'GW38 EV', 'Expected Upper', 'Expected Lower', 'RSI', '趨勢', '波動度']
+    st.dataframe(matrix_df.reindex(row_order), use_container_width=True)
+
+    # D. 預測假設
     with st.expander("📝 預測模型假設 (Predict Assumption)"):
         st.markdown(f"""
-        - **EV (Expected Value)**: 基於近 5 週加權得分 (WMA) 推算至第 38 週。
-        - **Range (Upper/Lower)**: 95% 信賴區間，考量剩餘 **{t}** 週的歷史波動率。
-        - **布林帶 %B**: `> 1` 代表近期表現超常，`< 0` 代表表現低迷。
+        - **EV (Expected Value)**: 使用加權移動平均 (WMA) 近 5 週表現推算。
+        - **Range**: 95% 信賴區間，隨剩餘週數 $\sqrt{{t}}$ 縮減。
+        - **Net Score x 2**: 所有預測輸贏皆為全聯賽成員間的積分對沖結果。
         """)
 
-    # 2. 決算矩陣 (重點優化：經理人為 Columns)
-    st.subheader("📊 決算矩陣 (Settlement Matrix)")
-    # 轉置表格：將經理人變為欄位
-    matrix_df = res_df.set_index('經理人').T
-    
-    # 重新排列 Row 順序，確保最重要的數據在最上面
-    row_order = [
-        '目前輸贏', '預測輸贏', 'GW38 EV', 'Expected Upper', 'Expected Lower', 
-        'RSI (動能)', 'MACD 趨勢', '布林帶 %B', '爆發力 (Mom)'
-    ]
-    matrix_df = matrix_df.reindex(row_order)
-    
-    st.dataframe(matrix_df, use_container_width=True)
-
-    # 3. 圖表分析
+    # E. 圖表
     st.markdown("---")
-    t1, t2 = st.tabs(["💰 輸贏曲線", "🔮 預測分佈"])
-    
+    t1, t2 = st.tabs(["💰 輸贏曲線", "🔮 區間對比"])
     with t1:
         st.line_chart(df.pivot(index='GW', columns='經理人', values='目前輸贏'))
         
-        
     with t2:
-        st.write("各經理人季末總分期望區間 (EV ± Range):")
-        # 顯示橫向預測區間
-        range_chart_df = res_df[['經理人', 'Expected Lower', 'GW38 EV', 'Expected Upper']].sort_values('GW38 EV', ascending=False)
-        st.dataframe(range_chart_df, use_container_width=True, hide_index=True)
+        st.write("各經理人季末總分預期區間 (EV ± Range):")
+        st.dataframe(res_df[['經理人', 'Expected Lower', 'GW38 EV', 'Expected Upper']].sort_values('GW38 EV', ascending=False), use_container_width=True, hide_index=True)
         
 
 except Exception as e:
     st.error(f"Error: {e}")
 
-st.caption(f"FPL Data Optimized for iPhone | Current GW: {max_gw}")
+st.caption(f"Optimized for iPhone | GW {max_gw} | Powered by Gemini Analytics")
